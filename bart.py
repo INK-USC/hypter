@@ -4,6 +4,8 @@ from torch import Tensor, nn
 from transformers import T5ForConditionalGeneration, BartForConditionalGeneration
 from transformers.modeling_bart import shift_tokens_right
 
+from utils import label_smoothed_nll_loss
+
 class MyBart(BartForConditionalGeneration):
     def forward(self, input_ids, attention_mask=None, encoder_outputs=None,
             decoder_input_ids=None, decoder_attention_mask=None, decoder_cached_states=None,
@@ -25,9 +27,9 @@ class MyBart(BartForConditionalGeneration):
         )
         lm_logits = F.linear(outputs[0], self.model.shared.weight, bias=self.final_logits_bias)
         if is_training:
-            loss_fct = nn.CrossEntropyLoss(reduction="mean", ignore_index=self.config.pad_token_id)
-            loss = loss_fct(lm_logits.view(-1, self.config.vocab_size),
-                              decoder_input_ids.view(-1))
+            # loss_fct = nn.CrossEntropyLoss(reduction="mean", ignore_index=self.config.pad_token_id)
+            loss, _ = label_smoothed_nll_loss(lm_logits.view(-1, self.config.vocab_size),
+                              decoder_input_ids.view(-1), ignore_index=self.config.pad_token_id)
             return loss
         return (lm_logits, ) + outputs[1:]
 
