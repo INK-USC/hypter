@@ -3,6 +3,8 @@ import json
 import re
 import string
 import numpy as np
+
+from collections import Counter
 from tqdm import tqdm
 
 import torch
@@ -22,9 +24,13 @@ class ZESTData(object):
         self.old_data = [json.loads(json_str) for json_str in json_list]
         self.data = []
 
+
+
         for dp in self.old_data:
-            for example in dp["examples"]:
-                self.data.append({"question": dp["question"],
+            for idx, example in enumerate(dp["examples"]):
+                self.data.append({  "id": dp["id"],
+                                    "in_task_id": idx,
+                                    "question": dp["question"],
                                     "context": example["context"],
                                     "answers": example["all_answers"]
                                 })
@@ -56,12 +62,21 @@ class ZESTData(object):
         else:
             raise NotImplementedError()
 
-        self.metric = "EM"
+        self.metric = "F1"
         self.max_input_length = self.args.max_input_length
         self.tokenizer = None
         self.dataset = None
         self.dataloader = None
         self.cache = None
+
+    def __len__(self):
+        return len(self.data)
+
+    def decode(self, tokens):
+        return self.tokenizer.decode(tokens, skip_special_tokens=True, clean_up_tokenization_spaces=True).lower()
+
+    def decode_batch(self, tokens):
+        return [self.decode(_tokens) for _tokens in tokens]
 
     def flatten(self, answers):
         # not sure what this means
@@ -140,14 +155,14 @@ class ZESTData(object):
 
     def evaluate(self, predictions):
         assert len(predictions)==len(self), (len(predictions), len(self))
-        ems = []
+        f1s = []
         for (prediction, dp) in zip(predictions, self.data):
-            ems.append(get_f1_over_list(prediction, [item["answer"] for item in dp["output"]]))
-        return ems
+            f1s.append(get_f1_over_list(prediction, dp["answers"]))
+        return f1s
 
     def save_predictions(self, predictions):
         assert len(predictions)==len(self), (len(predictions), len(self))
-        prediction_dict = {dp["id"]:prediction for dp, prediction in zip(self.data, predictions)}
+        prediction_dict = {dp["id"]+"_"+str(dp["in_task_id"]):prediction for dp, prediction in zip(self.data, predictions)}
         save_path = os.path.join(self.args.output_dir, "{}predictions.json".format(self.args.prefix))
         with open(save_path, "w") as f:
             json.dump(prediction_dict, f)

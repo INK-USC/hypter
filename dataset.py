@@ -11,9 +11,9 @@ from torch.utils.data import Dataset, TensorDataset, DataLoader, RandomSampler, 
 from my_datasets import ZSREData, ZESTData
 
 def MyDatasetCollection(logger, args, data_path, is_training):
-        if args.dataset == 'zsre':
-            return ZSREData(logger, args, data_path, is_training)
-        elif args.dataset == 'zest':
-            return ZESTData(logger, args, data_path, is_training)
-        else:
-            raise NotImplementedError
+    if args.dataset == 'zsre':
+        return ZSREData(logger, args, data_path, is_training)
+    elif args.dataset == 'zest':
+        return ZESTData(logger, args, data_path, is_training)
+    else:
+        raise NotImplementedError

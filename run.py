@@ -11,7 +11,7 @@ from bart import MyBart
 from tqdm import tqdm
 
 def run(args, logger):
-    tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
+    tokenizer = BartTokenizer.from_pretrained(args.model)
 
     train_data = MyDatasetCollection(logger, args, args.train_file, True)
     dev_data = MyDatasetCollection(logger, args, args.predict_file, False)
@@ -30,10 +30,10 @@ def run(args, logger):
                         return key[7:]
                     return key
                 return {_convert(key):value for key, value in state_dict.items()}
-            model = MyBart.from_pretrained("facebook/bart-base",
+            model = MyBart.from_pretrained(args.model,
                                            state_dict=convert_to_single_gpu(torch.load(args.checkpoint)))
         else:
-            model = MyBart.from_pretrained("facebook/bart-base")
+            model = MyBart.from_pretrained(args.model)
         if args.n_gpu>1:
             model = torch.nn.DataParallel(model)
 
@@ -52,14 +52,14 @@ def run(args, logger):
         train(args, logger, model, train_data, dev_data, optimizer, scheduler)
 
     if args.do_predict:
-        checkpoint = os.path.join(args.output_dir, 'best-model.pt')
+        checkpoint = os.path.join(args.output_dir, 'last-model.pt')
         def convert_to_single_gpu(state_dict):
             def _convert(key):
                 if key.startswith('module.'):
                     return key[7:]
                 return key
             return {_convert(key):value for key, value in state_dict.items()}
-        model = MyBart.from_pretrained("facebook/bart-base",
+        model = MyBart.from_pretrained(args.model,
                                        state_dict=convert_to_single_gpu(torch.load(checkpoint)))
         logger.info("Loading checkpoint from {}".format(checkpoint))
         if torch.cuda.is_available():
@@ -125,6 +125,9 @@ def train(args, logger, model, train_data, dev_data, optimizer, scheduler):
                 model.train()
         if stop_training:
             break
+
+    model_state_dict = {k:v.cpu() for (k, v) in model.state_dict().items()}
+    torch.save(model_state_dict, os.path.join(args.output_dir, "last-model.pt"))
 
 def inference(model, dev_data, save_predictions=False):
     predictions = []
