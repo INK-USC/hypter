@@ -8,9 +8,9 @@ from tqdm import tqdm
 import torch
 from torch.utils.data import Dataset, TensorDataset, DataLoader, RandomSampler, SequentialSampler
 
-from .utils import MyQADataset, MyDataLoader
+from .utils import MyGroupedQADataset, MyGroupedDataLoader
 
-class ZSREData(object):
+class ZSREGroupedData(object):
 
     def __init__(self, logger, args, data_path, is_training):
         self.data_path = data_path
@@ -47,7 +47,7 @@ class ZSREData(object):
         else:
             raise NotImplementedError()
 
-        self.metric = "Acc"
+        self.metric = "EM"
         self.max_input_length = self.args.max_input_length
         self.tokenizer = None
         self.dataset = None
@@ -63,17 +63,22 @@ class ZSREData(object):
     def decode_batch(self, tokens):
         return [self.decode(_tokens) for _tokens in tokens]
 
-    def flatten(self, answers):
-        # not sure what this means
-        new_answers, metadata = [], []
-        for answer in answers:
-            metadata.append((len(new_answers), len(new_answers)+len(answer)))
-            new_answers += answer
-        return new_answers, metadata
+    def flatten(self, raw_data):
+        questions, answers, metadata_rel, metadata_questions = [], [], [], []
+        new_questions = []
+        new_answers = []
+        for relation in raw_data:
+            metadata_rel.append((len(new_questions), len(new_questions)+len(relation)))
+            new_questions += [qa[0] for qa in relation]
+            for qa in relation:
+                metadata_questions.append((len(new_answers), len(new_answers)+len(qa[1])))
+                new_answers += qa[1]
+
+        return new_questions, new_answers, metadata_rel, metadata_questions
 
     def load_dataset(self, tokenizer, do_return=False):
         self.tokenizer = tokenizer
-        postfix = tokenizer.__class__.__name__.replace("zer", "zed")
+        postfix = 'Grouped-' + tokenizer.__class__.__name__.replace("zer", "zed")
         
         preprocessed_path = os.path.join(
             "/".join(self.data_path.split("/")[:-1]),
@@ -83,45 +88,64 @@ class ZSREData(object):
             # load preprocessed input
             self.logger.info("Loading pre-tokenized data from {}".format(preprocessed_path))
             with open(preprocessed_path, "r") as f:
-                input_ids, attention_mask, decoder_input_ids, decoder_attention_mask, \
-                    metadata = json.load(f)
+                relation_ids, relation_mask, input_ids, attention_mask, \
+                    decoder_input_ids, decoder_attention_mask, \
+                    metadata_rel, metadata_questions = json.load(f)
 
         else:
             print("Start tokenizing ... {} instances".format(len(self.data)))
-            questions = [d["input"] for d in self.data]
-            answers = [[item["answer"] for item in d["output"]] for d in self.data]
 
-            answers, metadata = self.flatten(answers) # what is metadata?
+            relations = sorted(list(set([d['input'][d['input'].index("[SEP]")+6:] for d in self.data])))
+            raw_data = [[] for _ in range(len(relations))]
+            id2relation = {k: v for k,v in enumerate(relations)}
+            relation2id = {v: k for k,v in enumerate(relations)}
 
-            if self.args.do_lowercase:
-                questions = [question.lower() for question in questions]
-                answers = [answer.lower() for answer in answers]
-            if self.args.append_another_bos:
-                questions = ["<s> "+question for question in questions]
-                answers = ["<s> " +answer for answer in answers]
+            print("relation2id: {}".format(relation2id))
+
+            for d in self.data:
+                rel = d['input'][d['input'].index("[SEP]")+6:]
+                rel_id = relation2id[rel]
+                raw_data[rel_id].append((d["input"], [item["answer"] for item in d["output"]]))
             
-            print("Tokenizing Input ...")
+            # metadata_rel[idx] = (st, ed); it means questions[st: ed] are examples of relation idx;
+            # metadata_questions[idx] = (st, ed); it means answers[st: ed] are examples of quesiton idx.
+            questions, answers, metadata_rel, metadata_questions = self.flatten(raw_data)
+
+
+            # if self.args.do_lowercase:
+            #     questions = [question.lower() for question in questions]
+            #     answers = [answer.lower() for answer in answers]
+            # if self.args.append_another_bos:
+            #     questions = ["<s> "+question for question in questions]
+            #     answers = ["<s> " +answer for answer in answers]
+            print("Tokenizing Relations ...")
+            relation_input = tokenizer.batch_encode_plus(relations,
+                                                         pad_to_max_length=True)
+            
+            print("Tokenizing Questions ...")
             question_input = tokenizer.batch_encode_plus(questions,
                                                          pad_to_max_length=True,
                                                          max_length=self.args.max_input_length)
-            print("Tokenizing Output ...")
+            print("Tokenizing Answers ...")
             answer_input = tokenizer.batch_encode_plus(answers,
                                                        pad_to_max_length=True)
 
+            relation_ids, relation_mask = relation_input["input_ids"], relation_input["attention_mask"]
             input_ids, attention_mask = question_input["input_ids"], question_input["attention_mask"]
             decoder_input_ids, decoder_attention_mask = answer_input["input_ids"], answer_input["attention_mask"]
             if self.load:
-                preprocessed_data = [input_ids, attention_mask,
-                                     decoder_input_ids, decoder_attention_mask,
-                                     metadata]
-                with open(preprocessed_path, "w") as f:
-                    json.dump([input_ids, attention_mask,
-                               decoder_input_ids, decoder_attention_mask,
-                               metadata], f)
+                # preprocessed_data = [relation_ids, relation_mask, input_ids, attention_mask,
+                #                      decoder_input_ids, decoder_attention_mask,
+                #                      metadata_rel, metadata_questions]
 
-        self.dataset = MyQADataset(input_ids, attention_mask,
+                with open(preprocessed_path, "w") as f:
+                    json.dump([relation_ids, relation_mask, input_ids, attention_mask,
+                               decoder_input_ids, decoder_attention_mask,
+                               metadata_rel, metadata_questions], f)
+
+        self.dataset = MyGroupedQADataset(relation_ids, relation_mask, input_ids, attention_mask,
                                         decoder_input_ids, decoder_attention_mask,
-                                        in_metadata=None, out_metadata=metadata,
+                                        metadata_rel, metadata_questions,
                                         is_training=self.is_training)
         self.logger.info("Loaded {} examples from {} data".format(len(self.dataset), self.data_type))
 
@@ -129,7 +153,7 @@ class ZSREData(object):
             return self.dataset
 
     def load_dataloader(self, do_return=False):
-        self.dataloader = MyDataLoader(self.args, self.dataset, self.is_training)
+        self.dataloader = MyGroupedDataLoader(self.args, self.dataset, self.is_training)
         if do_return:
             return self.dataloader
 
@@ -137,7 +161,11 @@ class ZSREData(object):
         assert len(predictions)==len(self), (len(predictions), len(self))
         ems = []
         for (prediction, dp) in zip(predictions, self.data):
-            ems.append(get_accuracy(prediction.strip(), [item["answer"] for item in dp["output"]]))
+            ems.append(get_exact_match(prediction, [item["answer"] for item in dp["output"]]))
+        # for i in range(5):
+        #     print(predictions[i])
+        #     print([item["answer"] for item in self.data[i]["output"]])
+        
         return ems
 
     def save_predictions(self, predictions):
@@ -147,14 +175,6 @@ class ZSREData(object):
         with open(save_path, "w") as f:
             json.dump(prediction_dict, f)
         self.logger.info("Saved prediction in {}".format(save_path))
-
-def get_accuracy(prediction, groundtruth):
-    if type(groundtruth)==list:
-        if len(groundtruth)==0:
-            return 0
-        return np.max([int(prediction==gt) for gt in groundtruth])
-    return int(prediction==gt)
-
 
 def get_exact_match(prediction, groundtruth):
     if type(groundtruth)==list:
