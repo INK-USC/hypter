@@ -27,9 +27,11 @@ class MyBart(BartForConditionalGeneration):
         )
         lm_logits = F.linear(outputs[0], self.model.shared.weight, bias=self.final_logits_bias)
         if is_training:
-            # loss_fct = nn.CrossEntropyLoss(reduction="mean", ignore_index=self.config.pad_token_id)
-            loss, _ = label_smoothed_nll_loss(lm_logits.view(-1, self.config.vocab_size),
-                              decoder_input_ids.view(-1), ignore_index=self.config.pad_token_id)
+            lprobs = F.log_softmax(lm_logits, dim=-1)
+            loss, _ = label_smoothed_nll_loss(lprobs, decoder_input_ids, epsilon=0.1, ignore_index=self.config.pad_token_id)
+            # loss_fct = nn.CrossEntropyLoss(reduction="sum", ignore_index=self.config.pad_token_id)
+            # loss = loss_fct(lm_logits.view(-1, self.config.vocab_size),
+            #                   decoder_input_ids.view(-1))
             return loss
         return (lm_logits, ) + outputs[1:]
 
