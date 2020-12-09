@@ -1,9 +1,11 @@
 from transformers.modeling_bart import EncoderLayer, DecoderLayer, BartEncoder, BartDecoder, BartModel
+from transformers.modeling_bart import shift_tokens_right
 from transformers.configuration_bart import BartConfig
 from transformers.configuration_utils import PretrainedConfig
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 class BartWithAdapterConfig(BartConfig):
     def __init__(
@@ -99,8 +101,25 @@ class EncoderLayerWithAdapter(EncoderLayer):
         super(EncoderLayerWithAdapter, self).__init__(config)
 
         self.adapter_dim = config.adapter_dim
-        self.adapter_down = Linear(self.embed_dim, self.adapter_dim)
-        self.adapter_up = Linear(self.adapter_dim, self.embed_dim)
+        self.adapter_down_weight = torch.ones(self.embed_dim, self.adapter_dim)
+        self.adapter_down_bias = torch.zeros(self.adapter_dim)
+
+        self.adapter_up_weight = torch.ones(self.adapter_dim, self.embed_dim)
+        self.adapter_up_bias = torch.zeros(self.embed_dim)
+        # self.adapter_down = Linear(self.embed_dim, self.adapter_dim)
+        # self.adapter_up = Linear(self.adapter_dim, self.embed_dim)
+
+    def adapter_down(self, x):
+        # print(x.size())
+        # print(self.adapter_down_weight.size())
+        # z = x * self.adapter_down_weight
+        # print(z.size())
+        return F.linear(x, self.adapter_down_weight.t(), self.adapter_down_bias)
+        # return x * self.adapter_down_weight + self.adapter_down_bias
+
+    def adapter_up(self, x):
+        return F.linear(x, self.adapter_up_weight.t(), self.adapter_up_bias)
+        # return x * self.adapter_up_weight + self.adapter_up_bias
 
     def forward(self, x, encoder_padding_mask):
         residual = x
@@ -138,8 +157,20 @@ class DecoderLayerWithAdapter(DecoderLayer):
         super(DecoderLayerWithAdapter, self).__init__(config)
 
         self.adapter_dim = config.adapter_dim
-        self.adapter_down = Linear(self.embed_dim, self.adapter_dim)
-        self.adapter_up = Linear(self.adapter_dim, self.embed_dim)
+
+        self.adapter_down_weight = torch.ones(self.embed_dim, self.adapter_dim)
+        self.adapter_down_bias = torch.zeros(self.adapter_dim)
+
+        self.adapter_up_weight = torch.ones(self.adapter_dim, self.embed_dim)
+        self.adapter_up_bias = torch.zeros(self.embed_dim)
+        # self.adapter_down = Linear(self.embed_dim, self.adapter_dim)
+        # self.adapter_up = Linear(self.adapter_dim, self.embed_dim)
+
+    def adapter_down(self, x):
+        return F.linear(x, self.adapter_down_weight.t(), self.adapter_down_bias)
+
+    def adapter_up(self, x):
+        return F.linear(x, self.adapter_up_weight.t(), self.adapter_up_bias)
 
     def forward(
         self,
@@ -265,3 +296,8 @@ class MyBartWithAdapter(BartForConditionalGenerationWithAdapter):
             return loss
         return (lm_logits, ) + outputs[1:]
     
+    def encoders(self):
+        return self.model.encoder.layers
+
+    def decoders(self):
+        return self.model.decoder.layers
