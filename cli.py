@@ -43,7 +43,8 @@ def main():
 
     ## Model parameters
     parser.add_argument("--checkpoint", type=str)
-    parser.add_argument("--do_lowercase", action='store_true', default=True)
+    parser.add_argument("--do_lowercase", action='store_true', default=False)
+    parser.add_argument("--freeze_embeds", action='store_true', default=False)
 
     # Preprocessing/decoding-related parameters
     parser.add_argument('--max_input_length', type=int, default=24)

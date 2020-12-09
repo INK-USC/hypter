@@ -7,6 +7,7 @@ from transformers import AdamW, get_linear_schedule_with_warmup
 
 from dataset import MyDatasetCollection
 from bart import MyBart
+from utils import freeze_embeds, trim_batch
 
 from tqdm import tqdm
 
@@ -34,6 +35,11 @@ def run(args, logger):
                                            state_dict=convert_to_single_gpu(torch.load(args.checkpoint)))
         else:
             model = MyBart.from_pretrained(args.model)
+
+        if args.freeze_embeds:
+            logger.info("Freezing embeddings")
+            freeze_embeds(model)
+
         if args.n_gpu>1:
             model = torch.nn.DataParallel(model)
 
@@ -52,7 +58,7 @@ def run(args, logger):
         train(args, logger, model, train_data, dev_data, optimizer, scheduler)
 
     if args.do_predict:
-        checkpoint = os.path.join(args.output_dir, 'last-model.pt')
+        checkpoint = os.path.join(args.output_dir, "last-model.pt")
         def convert_to_single_gpu(state_dict):
             def _convert(key):
                 if key.startswith('module.'):
@@ -81,6 +87,12 @@ def train(args, logger, model, train_data, dev_data, optimizer, scheduler):
             global_step += 1
             if torch.cuda.is_available():
                 batch = [b.to(torch.device("cuda")) for b in batch]
+            
+            pad_token_id = train_data.tokenizer.pad_token_id
+
+            batch[0], batch[1] = trim_batch(batch[0], pad_token_id, batch[1])
+            batch[2], batch[3] = trim_batch(batch[2], pad_token_id, batch[3])
+
             loss = model(input_ids=batch[0], attention_mask=batch[1],
                          decoder_input_ids=batch[2], decoder_attention_mask=batch[3],
                          is_training=True)
@@ -139,7 +151,8 @@ def inference(model, dev_data, save_predictions=False):
                                  attention_mask=batch[1],
                                  num_beams=dev_data.args.num_beams,
                                  max_length=dev_data.args.max_output_length,
-                                 early_stopping=True,)
+                                 decoder_start_token_id=model.config.bos_token_id,
+                                 early_stopping=False,)
         for input_, output in zip(batch[0], outputs):
             pred = dev_data.decode(output)
             predictions.append(pred)
