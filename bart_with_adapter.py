@@ -1,7 +1,9 @@
-from transformers.modeling_bart import EncoderLayer, DecoderLayer, BartEncoder, BartDecoder, BartModel
+from transformers.modeling_bart import EncoderLayer, DecoderLayer, BartEncoder, BartDecoder, BartModel, BartForConditionalGeneration
 from transformers.modeling_bart import shift_tokens_right
 from transformers.configuration_bart import BartConfig
 from transformers.configuration_utils import PretrainedConfig
+
+from utils import label_smoothed_nll_loss
 
 import torch
 import torch.nn as nn
@@ -38,7 +40,7 @@ class BartWithAdapterConfig(BartConfig):
         normalize_embedding=True,
         static_position_embeddings=False,
         add_bias_logits=False,
-        adapter_dim=128,
+        adapter_dim=64,
         **common_kwargs
     ):
 
@@ -87,10 +89,11 @@ class BartWithAdapterConfig(BartConfig):
 
         # Adapter
         self.adapter_dim = adapter_dim
+        self.generator_hdim = int(self.d_model * 0.5)
 
 def Linear(in_features, out_features, bias=True):
     m = nn.Linear(in_features, out_features, bias)
-    nn.init.xavier_uniform_(m.weight, gain=0.00001)
+    nn.init.xavier_uniform_(m.weight, gain=0.0000001)
     if bias:
         nn.init.constant_(m.bias, 0.0)
     return m
@@ -101,10 +104,10 @@ class EncoderLayerWithAdapter(EncoderLayer):
         super(EncoderLayerWithAdapter, self).__init__(config)
 
         self.adapter_dim = config.adapter_dim
-        self.adapter_down_weight = torch.ones(self.embed_dim, self.adapter_dim)
+        self.adapter_down_weight = torch.zeros(self.embed_dim, self.adapter_dim)
         self.adapter_down_bias = torch.zeros(self.adapter_dim)
 
-        self.adapter_up_weight = torch.ones(self.adapter_dim, self.embed_dim)
+        self.adapter_up_weight = torch.zeros(self.adapter_dim, self.embed_dim)
         self.adapter_up_bias = torch.zeros(self.embed_dim)
         # self.adapter_down = Linear(self.embed_dim, self.adapter_dim)
         # self.adapter_up = Linear(self.adapter_dim, self.embed_dim)
@@ -158,10 +161,10 @@ class DecoderLayerWithAdapter(DecoderLayer):
 
         self.adapter_dim = config.adapter_dim
 
-        self.adapter_down_weight = torch.ones(self.embed_dim, self.adapter_dim)
+        self.adapter_down_weight = torch.zeros(self.embed_dim, self.adapter_dim)
         self.adapter_down_bias = torch.zeros(self.adapter_dim)
 
-        self.adapter_up_weight = torch.ones(self.adapter_dim, self.embed_dim)
+        self.adapter_up_weight = torch.zeros(self.adapter_dim, self.embed_dim)
         self.adapter_up_bias = torch.zeros(self.embed_dim)
         # self.adapter_down = Linear(self.embed_dim, self.adapter_dim)
         # self.adapter_up = Linear(self.adapter_dim, self.embed_dim)
@@ -262,9 +265,9 @@ class BartModelWithAdapter(BartModel):
         self.encoder = BartEncodeWithAdapter(config, self.shared)
         self.decoder = BartDecoderWithAdapter(config, self.shared)   
 
-class BartForConditionalGenerationWithAdapter(BartModelWithAdapter):
+class BartForConditionalGenerationWithAdapter(BartForConditionalGeneration):
     def __init__(self, config: BartConfig):
-        super(BartForConditionalGenerationWithAdapter, self).__init__(config)
+        super().__init__(config)
         base_model = BartModelWithAdapter(config)
         self.model = base_model
         self.register_buffer("final_logits_bias", torch.zeros((1, self.model.shared.num_embeddings)))
@@ -290,9 +293,11 @@ class MyBartWithAdapter(BartForConditionalGenerationWithAdapter):
         )
         lm_logits = F.linear(outputs[0], self.model.shared.weight, bias=self.final_logits_bias)
         if is_training:
-            loss_fct = nn.CrossEntropyLoss(reduction="mean", ignore_index=self.config.pad_token_id)
-            loss = loss_fct(lm_logits.view(-1, self.config.vocab_size),
-                              decoder_input_ids.view(-1))
+            # loss_fct = nn.CrossEntropyLoss(reduction="mean", ignore_index=self.config.pad_token_id)
+            # loss = loss_fct(lm_logits.view(-1, self.config.vocab_size),
+            #                   decoder_input_ids.view(-1))
+            lprobs = F.log_softmax(lm_logits, dim=-1)
+            loss, _ = label_smoothed_nll_loss(lprobs, decoder_input_ids, epsilon=0.1, ignore_index=self.config.pad_token_id)
             return loss
         return (lm_logits, ) + outputs[1:]
     
@@ -301,3 +306,9 @@ class MyBartWithAdapter(BartForConditionalGenerationWithAdapter):
 
     def decoders(self):
         return self.model.decoder.layers
+
+def _make_linear_from_emb(emb):
+    vocab_size, emb_size = emb.weight.shape
+    lin_layer = nn.Linear(vocab_size, emb_size, bias=False)
+    lin_layer.weight.data = emb.weight.data
+    return lin_layer
