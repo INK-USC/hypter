@@ -10,7 +10,7 @@ from growing_bart import ParameterGenerator, GrowingBart
 
 from dataset import MyDatasetCollection
 from bart import MyBart
-from utils import freeze_embeds
+from utils import freeze_embeds, trim_batch
 
 from tqdm import tqdm
 
@@ -29,7 +29,9 @@ def run(args, logger):
     dev_data.load_dataloader()
 
     if args.do_train:
-        config = BartWithAdapterConfig.from_pretrained('facebook/bart-base')
+        config = BartWithAdapterConfig.from_pretrained(args.model)
+        config.adapter_dim = args.adapter_dim
+        config.adapt_layer_norm = args.adapt_layer_norm
         bart = MyBartWithAdapter(config)
 
         if args.checkpoint is not None:
@@ -52,7 +54,7 @@ def run(args, logger):
 
         if args.freeze_embeds:
             logger.info("Freezing embeddings")
-            freeze_embeds(model)
+            freeze_embeds(bart)
 
         if args.n_gpu>1:
             model = torch.nn.DataParallel(model)
@@ -73,7 +75,30 @@ def run(args, logger):
 
         train(args, logger, model, train_data, dev_data, optimizer, scheduler)
 
+    if args.do_predict:
+        checkpoint = os.path.join(args.output_dir, args.predict_checkpoint)
+        def convert_to_single_gpu(state_dict):
+            def _convert(key):
+                if key.startswith('module.'):
+                    return key[7:]
+                return key
+            return {_convert(key):value for key, value in state_dict.items()}
+        
+        config = BartWithAdapterConfig.from_pretrained(args.model)
+        config.adapter_dim = args.adapter_dim
+        bart = MyBartWithAdapter(config)
+        generator = ParameterGenerator(config)
+        model = GrowingBart(bart, generator, config)
+        
+        model.load_state_dict(convert_to_single_gpu(torch.load(checkpoint)))
 
+        logger.info("Loading checkpoint from {}".format(checkpoint))
+        if torch.cuda.is_available():
+            model.to(torch.device("cuda"))
+
+        model.eval()
+        f1s = inference(model, dev_data, save_predictions=True, verbose=True)
+        logger.info("%s on %s data: %.2f" % (dev_data.metric, dev_data.data_type, np.mean(f1s)*100))
 
 def train(args, logger, model, train_data, dev_data, optimizer, scheduler):
 
@@ -83,37 +108,127 @@ def train(args, logger, model, train_data, dev_data, optimizer, scheduler):
     best_accuracy = -1
     stop_training = False
 
+
+    # curr_em = inference(model if args.n_gpu==1 else model.module, dev_data)
+    # logger.info("[Before Training] %s %.2f%%" % (
+    #         dev_data.metric,
+    #         curr_em*100))
+
     logger.info("Starting training!")
 
-    for batch in tqdm(train_data.dataloader, desc="Epoch {}".format(0)):
-        global_step += 1
+    model.model.backup_layer_norm_parameters()
+
+    for epoch in range(int(args.num_train_epochs)):
+        for batch in tqdm(train_data.dataloader, desc="Epoch {}".format(epoch)):
+            global_step += 1
+
+            if torch.cuda.is_available():
+                batch = [b.to(torch.device("cuda")) for b in batch[0]]
+
+            rel_ids, rel_masks = batch[0].unsqueeze(0), batch[1].unsqueeze(0)
+            input_ids, input_masks = batch[2], batch[3]
+            output_ids, output_masks = batch[4], batch[5]
+
+            pad_token_id = train_data.tokenizer.pad_token_id
+            rel_ids, rel_masks = trim_batch(rel_ids, pad_token_id, rel_masks)
+            input_ids, input_masks = trim_batch(input_ids, pad_token_id, input_masks)
+            output_ids, output_masks = trim_batch(output_ids, pad_token_id, output_masks)
+
+            loss = model.forward(rel_ids=rel_ids,
+                                rel_masks=rel_masks,
+                                input_ids=input_ids,
+                                input_masks=input_masks,
+                                output_ids=output_ids,
+                                output_masks=output_masks,
+                                is_training=True)
+
+            train_losses.append(loss.detach().cpu())
+            loss.backward()
+
+            model.model.restore_layer_norm_parameters()
+
+            if global_step % args.gradient_accumulation_steps == 0:
+                # for p in model.meta_model.decoders.parameters():
+                    # print(p)
+                    # print(p.grad)
+                    # break
+                
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+                
+                # for p in model.meta_model.decoders.parameters():
+                #     print()
+                #     print(p)
+                #     print(p.grad)
+                #     break
+                
+                optimizer.step()    # We have accumulated enough gradients
+                scheduler.step()
+                model.zero_grad()
+
+                
+
+                # print(model.meta_model.decoders[-1].linear1.weight)
+
+            if global_step % args.eval_period == 0:
+                model.eval()
+                # curr_em = 0.0
+                curr_em = inference(model if args.n_gpu==1 else model.module, dev_data, save_predictions=True)
+                logger.info("Step %d Train loss %.2f %s %.2f%% on epoch=%d" % (
+                        global_step,
+                        np.mean(train_losses),
+                        dev_data.metric,
+                        curr_em*100,
+                        epoch))
+                train_losses = []
+                if best_accuracy < curr_em:
+                    model_state_dict = {k:v.cpu() for (k, v) in model.state_dict().items()}
+                    torch.save(model_state_dict, os.path.join(args.output_dir, "best-model.pt"))
+                    logger.info("Saving model with best %s: %.2f%% -> %.2f%% on epoch=%d, global_step=%d" % \
+                            (dev_data.metric, best_accuracy*100.0, curr_em*100.0, epoch, global_step))
+                    best_accuracy = curr_em
+                    wait_step = 0
+                    stop_training = False
+                else:
+                    wait_step += 1
+                    if wait_step >= args.wait_step:
+                        stop_training = True
+                        break
+                model.train()
+
+        if stop_training:
+            break
+
+    model_state_dict = {k:v.cpu() for (k, v) in model.state_dict().items()}
+    torch.save(model_state_dict, os.path.join(args.output_dir, "last-model.pt"))
+
+
+def inference(model, dev_data, save_predictions=False, verbose=False):
+    predictions = []
+    bos_token_id = dev_data.tokenizer.bos_token_id
+    for idx, batch in enumerate(dev_data.dataloader.inference_dataloader()):
 
         if torch.cuda.is_available():
-            batch = [b.to(torch.device("cuda")) for b in batch[0]]
+            batch = [b.to(torch.device("cuda")) for b in batch]
 
-        rel_ids, rel_masks = batch[0].unsqueeze(0), batch[1].unsqueeze(0)
-        input_ids, input_masks = batch[2], batch[3]
-        output_ids, output_masks = batch[4], batch[5]
+        pad_token_id = dev_data.tokenizer.pad_token_id
+        batch[0], batch[1] = trim_batch(batch[0].unsqueeze(0), pad_token_id, batch[1].unsqueeze(0))
+        batch[2], batch[3] = trim_batch(batch[2], pad_token_id, batch[3])
 
-        loss = model.forward(rel_ids=rel_ids,
-                            rel_masks=rel_masks,
-                            input_ids=input_ids,
-                            input_masks=input_masks,
-                            output_ids=output_ids,
-                            output_masks=output_masks,
-                            is_training=True)
+        with torch.no_grad():
+            model.set_relation(batch[0], batch[1])
 
-        train_losses.append(loss.detach().cpu())
-        loss.backward()
+            outputs = model.model.generate(input_ids=batch[2],
+                                    attention_mask=batch[3],
+                                    num_beams=dev_data.args.num_beams,
+                                    max_length=dev_data.args.max_output_length,
+                                    decoder_start_token_id=model.config.bos_token_id,
+                                    early_stopping=False,)
 
-        if global_step % args.gradient_accumulation_steps == 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
-            optimizer.step()    # We have accumulated enough gradients
-            scheduler.step()
-            model.zero_grad()
+        for input_, output in zip(batch[2], outputs):
+            pred = dev_data.decode(output)
+            predictions.append(pred)
 
-        print(loss)
-        # break
+    if save_predictions:
+        dev_data.save_predictions(predictions)
 
-def inference():
-    pass
+    return np.mean(dev_data.evaluate(predictions, verbose=verbose))

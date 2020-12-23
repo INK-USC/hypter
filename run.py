@@ -58,7 +58,7 @@ def run(args, logger):
         train(args, logger, model, train_data, dev_data, optimizer, scheduler)
 
     if args.do_predict:
-        checkpoint = os.path.join(args.output_dir, "last-model.pt")
+        checkpoint = os.path.join(args.output_dir, args.predict_checkpoint)
         def convert_to_single_gpu(state_dict):
             def _convert(key):
                 if key.startswith('module.'):
@@ -71,7 +71,7 @@ def run(args, logger):
         if torch.cuda.is_available():
             model.to(torch.device("cuda"))
         model.eval()
-        ems = inference(model, dev_data, save_predictions=True)
+        ems = inference(model, dev_data, save_predictions=True, verbose=True)
         logger.info("%s on %s data: %.2f" % (dev_data.metric, dev_data.data_type, np.mean(ems)*100))
 
 def train(args, logger, model, train_data, dev_data, optimizer, scheduler):
@@ -141,7 +141,7 @@ def train(args, logger, model, train_data, dev_data, optimizer, scheduler):
     model_state_dict = {k:v.cpu() for (k, v) in model.state_dict().items()}
     torch.save(model_state_dict, os.path.join(args.output_dir, "last-model.pt"))
 
-def inference(model, dev_data, save_predictions=False):
+def inference(model, dev_data, save_predictions=False, verbose=False):
     predictions = []
     bos_token_id = dev_data.tokenizer.bos_token_id
     for i, batch in enumerate(dev_data.dataloader):
@@ -158,4 +158,4 @@ def inference(model, dev_data, save_predictions=False):
             predictions.append(pred)
     if save_predictions:
         dev_data.save_predictions(predictions)
-    return np.mean(dev_data.evaluate(predictions))
+    return np.mean(dev_data.evaluate(predictions, verbose=verbose))

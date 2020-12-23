@@ -8,7 +8,7 @@ from tqdm import tqdm
 import torch
 from torch.utils.data import Dataset, TensorDataset, DataLoader, RandomSampler, SequentialSampler
 
-from my_datasets import ZSREData, ZESTData, ZSREGroupedData
+from my_datasets import ZSREData, ZESTData, ZSREGroupedData, ZESTGroupedData
 
 def MyDatasetCollection(logger, args, data_path, is_training):
     if args.dataset == 'zsre':
@@ -17,5 +17,7 @@ def MyDatasetCollection(logger, args, data_path, is_training):
         return ZSREGroupedData(logger, args, data_path, is_training)
     elif args.dataset == 'zest':
         return ZESTData(logger, args, data_path, is_training)
+    elif args.dataset == 'zest_grouped':
+        return ZESTGroupedData(logger, args, data_path, is_training)
     else:
         raise NotImplementedError

@@ -9,6 +9,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import copy
+
 class BartWithAdapterConfig(BartConfig):
     def __init__(
         self,
@@ -41,6 +43,7 @@ class BartWithAdapterConfig(BartConfig):
         static_position_embeddings=False,
         add_bias_logits=False,
         adapter_dim=64,
+        adapt_layer_norm=False,
         **common_kwargs
     ):
 
@@ -90,6 +93,7 @@ class BartWithAdapterConfig(BartConfig):
         # Adapter
         self.adapter_dim = adapter_dim
         self.generator_hdim = int(self.d_model * 0.5)
+        self.adapt_layer_norm = adapt_layer_norm
 
 def Linear(in_features, out_features, bias=True):
     m = nn.Linear(in_features, out_features, bias)
@@ -306,6 +310,18 @@ class MyBartWithAdapter(BartForConditionalGenerationWithAdapter):
 
     def decoders(self):
         return self.model.decoder.layers
+
+    def backup_layer_norm_parameters(self):
+        for encoder in self.encoders():
+            encoder.self_attn_layer_norm_bc = copy.deepcopy(encoder.self_attn_layer_norm)
+        for decoder in self.decoders():
+            decoder.self_attn_layer_norm_bc = copy.deepcopy(decoder.self_attn_layer_norm)
+
+    def restore_layer_norm_parameters(self):
+        for encoder in self.encoders():
+            encoder.self_attn_layer_norm = copy.deepcopy(encoder.self_attn_layer_norm_bc)
+        for decoder in self.decoders():
+            decoder.self_attn_layer_norm = copy.deepcopy(decoder.self_attn_layer_norm_bc)
 
 def _make_linear_from_emb(emb):
     vocab_size, emb_size = emb.weight.shape

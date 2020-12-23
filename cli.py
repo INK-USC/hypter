@@ -40,6 +40,7 @@ def main():
     parser.add_argument("--output_dir", default=None, type=str, required=True)
     parser.add_argument("--do_train", action='store_true')
     parser.add_argument("--do_predict", action='store_true')
+    parser.add_argument("--predict_checkpoint", type=str, default="best-model.pt")
 
     ## Model parameters
     parser.add_argument("--checkpoint", type=str)

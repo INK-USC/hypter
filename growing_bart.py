@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from transformers import BartModel
+from transformers import BartModel, RobertaModel
 from transformers.activations import ACT2FN
 
 def Linear(in_features, out_features, bias=True):
@@ -38,18 +38,8 @@ class ParameterGenerator(nn.Module):
 
         self.config = config
 
-        self.encoder = BartModel.from_pretrained('facebook/bart-base')
+        self.encoder = RobertaModel.from_pretrained('roberta-base')
         self.encoder.eval()
-
-        # each encoder layer or decoder layer has one adapter
-        # each adapter has 2 linear layers
-        # one that projects down: from hidden dimension (config.d_model) to adapter dimension (config.adapter_dim)
-        # one that projects up: from adapter dimension to hidden dimension
-        # self.decoders = nn.ModuleList([
-        #     nn.Linear(config.d_model, 
-        #         config.d_model * config.adapter_dim * 2 + config.d_model + config.adapter_dim
-        #     ) for _ in range(config.encoder_layers + config.decoder_layers)
-        # ])
 
         self.decoders = nn.ModuleList([
             SimpleGenerator(config) for _ in range(config.encoder_layers + config.decoder_layers)
@@ -64,18 +54,18 @@ class ParameterGenerator(nn.Module):
             outputs = self.encoder(
                 input_ids,
                 attention_mask=attention_mask,
-                decoder_input_ids=decoder_input_ids,
-                decoder_attention_mask=decoder_attention_mask,
-                encoder_outputs=encoder_outputs,
             )
 
-        x = outputs[0]  # last hidden state
-        eos_mask = input_ids.eq(self.config.eos_token_id)
-        if len(torch.unique(eos_mask.sum(1))) > 1:
-            raise ValueError("All examples must have the same number of <eos> tokens.")
-        sentence_representation = x[eos_mask, :].view(x.size(0), -1, x.size(-1))[:, -1, :]
+        x = outputs[0] # last hidden state
+        x = x[:, 0, :] # take <s> token (equiv. to [CLS])
+
+        # eos_mask = input_ids.eq(self.config.eos_token_id)
+        # if len(torch.unique(eos_mask.sum(1))) > 1:
+        #     raise ValueError("All examples must have the same number of <eos> tokens.")
+        # sentence_representation = x[eos_mask, :].view(x.size(0), -1, x.size(-1))[:, -1, :]
         
-        return sentence_representation
+        # return sentence_representation
+        return x
 
     def decode(self, sr):
         return [one_decoder(sr) for one_decoder in self.decoders]
