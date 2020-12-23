@@ -133,7 +133,7 @@ class ZSREData(object):
         if do_return:
             return self.dataloader
 
-    def evaluate(self, predictions):
+    def evaluate(self, predictions, verbose=False):
         assert len(predictions)==len(self), (len(predictions), len(self))
         ems = []
         for (prediction, dp) in zip(predictions, self.data):

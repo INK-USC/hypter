@@ -90,7 +90,10 @@ class ZSREGroupedData(object):
             with open(preprocessed_path, "r") as f:
                 relation_ids, relation_mask, input_ids, attention_mask, \
                     decoder_input_ids, decoder_attention_mask, \
-                    metadata_rel, metadata_questions = json.load(f)
+                    metadata_rel, metadata_questions, self.raw_questions, self.raw_answers = json.load(f)
+
+            # self.raw_questions = raw_questions
+            # self.raw_answers = raw_answers
 
         else:
             print("Start tokenizing ... {} instances".format(len(self.data)))
@@ -102,15 +105,25 @@ class ZSREGroupedData(object):
 
             print("relation2id: {}".format(relation2id))
 
+            self.raw_questions = []
+            self.raw_answers = []
+
             for d in self.data:
                 rel = d['input'][d['input'].index("[SEP]")+6:]
                 rel_id = relation2id[rel]
                 raw_data[rel_id].append((d["input"], [item["answer"] for item in d["output"]]))
+
+            # qas are sorted according to relations
+            for one_rel_data in raw_data:
+                self.raw_questions += [item[0] for item in one_rel_data]
+                self.raw_answers += [item[1] for item in one_rel_data]
+
+            print(self.raw_questions[:10])
+            print(self.raw_answers[:10])
             
             # metadata_rel[idx] = (st, ed); it means questions[st: ed] are examples of relation idx;
             # metadata_questions[idx] = (st, ed); it means answers[st: ed] are examples of quesiton idx.
             questions, answers, metadata_rel, metadata_questions = self.flatten(raw_data)
-
 
             # if self.args.do_lowercase:
             #     questions = [question.lower() for question in questions]
@@ -141,11 +154,11 @@ class ZSREGroupedData(object):
                 with open(preprocessed_path, "w") as f:
                     json.dump([relation_ids, relation_mask, input_ids, attention_mask,
                                decoder_input_ids, decoder_attention_mask,
-                               metadata_rel, metadata_questions], f)
+                               metadata_rel, metadata_questions, self.raw_questions, self.raw_answers], f)
 
         self.dataset = MyGroupedQADataset(relation_ids, relation_mask, input_ids, attention_mask,
                                         decoder_input_ids, decoder_attention_mask,
-                                        metadata_rel, metadata_questions,
+                                        metadata_rel, metadata_questions, self.args.inner_bsz,
                                         is_training=self.is_training)
         self.logger.info("Loaded {} examples from {} data".format(len(self.dataset), self.data_type))
 
@@ -157,15 +170,19 @@ class ZSREGroupedData(object):
         if do_return:
             return self.dataloader
 
-    def evaluate(self, predictions):
-        assert len(predictions)==len(self), (len(predictions), len(self))
+    def evaluate(self, predictions, verbose=False):
+        # assert len(predictions)==len(self.answers)
+        # print(len(predictions))
+        # print(len(self.raw_answers))
         ems = []
-        for (prediction, dp) in zip(predictions, self.data):
-            ems.append(get_exact_match(prediction, [item["answer"] for item in dp["output"]]))
+
         # for i in range(5):
         #     print(predictions[i])
-        #     print([item["answer"] for item in self.data[i]["output"]])
+        #     print(self.raw_questions[i])
+        #     print(self.raw_answers[i])
         
+        for (prediction, dp) in zip(predictions, self.raw_answers):
+            ems.append(get_accuracy(prediction.strip(), dp))
         return ems
 
     def save_predictions(self, predictions):
@@ -175,6 +192,14 @@ class ZSREGroupedData(object):
         with open(save_path, "w") as f:
             json.dump(prediction_dict, f)
         self.logger.info("Saved prediction in {}".format(save_path))
+
+def get_accuracy(prediction, groundtruth):
+    if type(groundtruth)==list:
+        if len(groundtruth)==0:
+            return 0
+        return np.max([int(prediction==gt) for gt in groundtruth])
+    return int(prediction==groundtruth)
+
 
 def get_exact_match(prediction, groundtruth):
     if type(groundtruth)==list:

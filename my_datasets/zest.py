@@ -13,6 +13,7 @@ import torch
 from torch.utils.data import Dataset, TensorDataset, DataLoader, RandomSampler, SequentialSampler
 
 from .utils import MyQADataset, MyDataLoader
+from .zest_evaluate import evaluate_predictions
 
 class ZESTData(object):
 
@@ -187,12 +188,35 @@ class ZESTData(object):
         if do_return:
             return self.dataloader
 
-    def evaluate(self, predictions):
-        assert len(predictions)==len(self), (len(predictions), len(self))
-        f1s = []
-        for (prediction, dp) in zip(predictions, self.data):
-            f1s.append(get_f1_over_list(prediction, dp["answer"]))
-        return f1s
+    def evaluate(self, predictions, verbose=False):
+        dev = []
+        with open(self.data_path, "r") as fin:
+            for line in fin:
+                dev.append(json.loads(line))
+
+        processed_predictions = []
+        for pred in predictions:
+            pred = pred.strip()
+
+            # if an empty string is predicted, set it to "n/a"
+            if len(pred) == 0:
+                pred = "n/a"
+
+            if pred[0] == '"' and pred[-1] == '"':
+                pred = json.loads(pred)
+            processed_predictions.append(pred)
+
+        score = evaluate_predictions(dev, processed_predictions, os.path.join(self.args.output_dir, "results.json"), verbose)
+        # f1s = []
+
+        # for i in range(5):
+        #     print(predictions[i])
+        #     print(self.raw_questions[i])
+        #     print(self.raw_answers[i])
+
+        # for (prediction, dp) in zip(predictions, self.raw_answers):
+        #     f1s.append(get_f1_over_list(prediction.strip(), dp))
+        return score
 
     def save_predictions(self, predictions):
         assert len(predictions)==len(self), (len(predictions), len(self))

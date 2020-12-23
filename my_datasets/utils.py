@@ -55,7 +55,7 @@ class MyGroupedQADataset(Dataset):
     def __init__(self,
                  relation_ids, relation_mask, input_ids, attention_mask,
                  decoder_input_ids, decoder_attention_mask,
-                 metadata_rel, metadata_questions,
+                 metadata_rel, metadata_questions, inner_bsz,
                  is_training=False):
         self.relation_ids = torch.LongTensor(relation_ids)
         self.relation_mask = torch.LongTensor(relation_mask)
@@ -65,6 +65,7 @@ class MyGroupedQADataset(Dataset):
         self.decoder_attention_mask = torch.LongTensor(decoder_attention_mask)
         self.metadata_rel = metadata_rel
         self.metadata_questions = metadata_questions
+        self.inner_bsz = inner_bsz
         self.is_training = is_training
 
         assert len(self.input_ids)==len(self.attention_mask)==self.metadata_rel[-1][-1]
@@ -81,8 +82,11 @@ class MyGroupedQADataset(Dataset):
         rel_ids = self.relation_ids[idx]
         rel_masks = self.relation_mask[idx]
 
-        in_indices = np.random.choice(range(*self.metadata_rel[idx]), 4, replace=False)
-        # print(in_indices)
+        if self.inner_bsz <= self.metadata_rel[idx][1] - self.metadata_rel[idx][0]:
+            in_indices = np.random.choice(range(*self.metadata_rel[idx]), self.inner_bsz, replace=False)
+        else:
+            # if there is not enough examples in the current task, we do `sample with replacement` to fill the batch
+            in_indices = np.random.choice(range(*self.metadata_rel[idx]), self.inner_bsz, replace=True)
 
         input_ids, attention_mask, decoder_input_ids, decoder_attention_mask = [], [], [], []
         for in_index in in_indices:
@@ -90,10 +94,7 @@ class MyGroupedQADataset(Dataset):
             attention_mask.append(self.attention_mask[in_index])
 
             out_idx = np.random.choice(range(*self.metadata_questions[in_index]))
-            # print(out_idx)
-            # print(self.decoder_input_ids[out_idx])
 
-            # assert out_idx < len(self.decoder_input_ids)
             decoder_input_ids.append(self.decoder_input_ids[out_idx])
             decoder_attention_mask.append(self.decoder_attention_mask[out_idx])
 
@@ -116,6 +117,18 @@ class MyGroupedDataLoader(DataLoader):
 
         super(MyGroupedDataLoader, self).__init__(dataset, sampler=sampler, batch_size=batch_size)
         self.collate_fn = self.dummy_collate
+        self.args = args
 
     def dummy_collate(self, input_data):
         return input_data
+
+    def inference_dataloader(self):
+        bsz = self.args.predict_batch_size
+        for idx, (start_idx, end_idx) in enumerate(self.dataset.metadata_rel):
+            input_ids_for_this_rel = self.dataset.input_ids[start_idx: end_idx]
+            masks_for_this_rel = self.dataset.attention_mask[start_idx: end_idx]
+            for j in range(0, len(input_ids_for_this_rel), bsz):
+                input_ids_this_batch = input_ids_for_this_rel[j: j+bsz]
+                masks_for_this_batch = masks_for_this_rel[j: j+bsz]
+
+                yield self.dataset.relation_ids[idx], self.dataset.relation_mask[idx], input_ids_this_batch, masks_for_this_batch

@@ -840,8 +840,8 @@ def score_prediction_and_answer(gold: List, predictions: str) -> float:
             # could not parse the prediction structure
             gold, pred = pad_smaller_answer(gold, [])
             assert len(gold) == len(pred)
-            print(predictions)
-            print("# ERROR: was a structure question but could not parse #")
+            # print(predictions)
+            # print("# ERROR: was a structure question but could not parse #")
             return 0.0, (gold, pred)
 
         # pad the smaller with empty dicts to be able to compare them
@@ -884,9 +884,9 @@ def score_prediction_and_answer(gold: List, predictions: str) -> float:
 
         if type(predictions) != str:
             # invalid type
-            print(
-                "# ERROR was given the wrong type for a non-structure answer #"
-            )
+            # print(
+            #     "# ERROR was given the wrong type for a non-structure answer #"
+            # )
             return 0.0, None
 
         predictions = predictions.split("|")  # can have multiple answers
@@ -1044,7 +1044,7 @@ def calculate_f1(mapping: Dict[str, List]):
     return f1
 
 
-def evaluate_predictions(dev: List[Dict], predictions: List, output_path: str):
+def evaluate_predictions(dev: List[Dict], predictions: List, output_path: str, verbose: bool = False):
     """
     The core function to evaluate the predictions on the dev set.  Will write a json file of results
     to `output_path`.
@@ -1174,9 +1174,10 @@ def evaluate_predictions(dev: List[Dict], predictions: List, output_path: str):
     # add normal, since `gather_generalization_metrics` won't do that
     final_results_gen["normal"] = threshold_results(base.score.to_numpy())
 
-    print("Writing results to {}\n".format(output_path))
-    print("Eval Standard: {}\n".format(final_results_standard))
-    print("Eval Official: {}\n".format(final_results_gen))
+    if verbose:
+        print("Writing results to {}\n".format(output_path))
+        print("Eval Standard: {}\n".format(final_results_standard))
+        print("Eval Official: {}\n".format(final_results_gen))
 
     # save as a CSV too, for reporting ease
     all_scores = []
@@ -1188,9 +1189,12 @@ def evaluate_predictions(dev: List[Dict], predictions: List, output_path: str):
 
     df = pd.DataFrame(all_scores, columns=names, index=row_names)
     df.loc["average"] = df.mean()
-    df = (df.round(2) * 100).astype(int)  # make numbers pretty
+    # df = (df.round(2) * 100).astype(int)  # make numbers pretty
     df.to_csv(output_path + ".csv")
-    print(df)
+    if verbose:
+        print(df)
+    else:
+        print(df.loc["average"])
 
     errors = pd.DataFrame(incorrects)
     errors.to_csv(output_path + "errors.csv")
@@ -1199,11 +1203,12 @@ def evaluate_predictions(dev: List[Dict], predictions: List, output_path: str):
     )
 
     final_results_gen["overall"] = df.loc["average"]["90"]
-    print(
-        "\n#### The overall score is: {} ####".format(
-            final_results_gen["overall"]
+    if verbose:
+        print(
+            "\n#### The overall score is: {} ####".format(
+                final_results_gen["overall"]
+            )
         )
-    )
 
     def convert(o):
         if isinstance(o, np.int64):
@@ -1212,6 +1217,8 @@ def evaluate_predictions(dev: List[Dict], predictions: List, output_path: str):
 
     with open(output_path, "w") as fout:
         json.dump(final_results_gen, fout, default=convert)
+
+    return final_results_gen["overall"]
 
 
 @click.command()
