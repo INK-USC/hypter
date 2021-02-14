@@ -2,3 +2,8 @@ from .zest import ZESTData
 from .zsre import ZSREData
 from .zsre_grouped import ZSREGroupedData
 from .zest_grouped import ZESTGroupedData
+from .zsre_with_description import ZSREWithDescriptionData
+from .zsre_with_description_grouped import ZSREWithDescriptionGroupedData
+from .squad import SQuADData
+from .squad_grouped import SQuADGroupedData
+from .squad_with_description_grouped import SQuADWithDescriptionGroupedData

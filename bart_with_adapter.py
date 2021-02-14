@@ -44,6 +44,7 @@ class BartWithAdapterConfig(BartConfig):
         add_bias_logits=False,
         adapter_dim=64,
         adapt_layer_norm=False,
+        unfreeze_hyper_encoder=False,
         **common_kwargs
     ):
 
@@ -92,8 +93,9 @@ class BartWithAdapterConfig(BartConfig):
 
         # Adapter
         self.adapter_dim = adapter_dim
-        self.generator_hdim = int(self.d_model * 0.5)
+        self.generator_hdim = int(self.d_model * 0.25)
         self.adapt_layer_norm = adapt_layer_norm
+        self.unfreeze_hyper_encoder = unfreeze_hyper_encoder
 
 def Linear(in_features, out_features, bias=True):
     m = nn.Linear(in_features, out_features, bias)

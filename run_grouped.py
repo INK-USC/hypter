@@ -32,6 +32,7 @@ def run(args, logger):
         config = BartWithAdapterConfig.from_pretrained(args.model)
         config.adapter_dim = args.adapter_dim
         config.adapt_layer_norm = args.adapt_layer_norm
+        config.unfreeze_hyper_encoder = args.unfreeze_hyper_encoder
         bart = MyBartWithAdapter(config)
 
         if args.checkpoint is not None:
@@ -44,6 +45,7 @@ def run(args, logger):
             bart_old = MyBart.from_pretrained(args.model,
                                            state_dict=convert_to_single_gpu(torch.load(args.checkpoint)))
             bart.model.load_state_dict(bart_old.model.state_dict(), strict=True)
+            logger.info("Loading checkpoint from {}".format(args.checkpoint))
 
         else:
             bart_old = MyBart.from_pretrained(args.model)
@@ -63,10 +65,19 @@ def run(args, logger):
             model.to(torch.device("cuda"))
 
         no_decay = ['bias', 'LayerNorm.weight']
-        optimizer_grouped_parameters = [
-            {'params': [p for n, p in model.meta_model.decoders.named_parameters() if not any(nd in n for nd in no_decay)], 'weight_decay': args.weight_decay},
-            {'params': [p for n, p in model.meta_model.decoders.named_parameters() if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
-        ]
+        if args.unfreeze_hyper_encoder:
+            optimizer_grouped_parameters = [
+                {'params': [p for n, p in model.meta_model.named_parameters() if not any(nd in n for nd in no_decay)], 'weight_decay': args.weight_decay},
+                {'params': [p for n, p in model.meta_model.named_parameters() if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
+            ]
+
+            num_parameters = sum(p.numel() for p in model.meta_model.parameters() if p.requires_grad)
+            logger.info("#Params: {}".format(num_parameters))
+        else:
+            optimizer_grouped_parameters = [
+                {'params': [p for n, p in model.meta_model.decoders.named_parameters() if not any(nd in n for nd in no_decay)], 'weight_decay': args.weight_decay},
+                {'params': [p for n, p in model.meta_model.decoders.named_parameters() if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
+            ]
 
         optimizer = AdamW(optimizer_grouped_parameters, lr=args.learning_rate, eps=args.adam_epsilon)
         scheduler =  get_linear_schedule_with_warmup(optimizer,
@@ -90,29 +101,29 @@ def run(args, logger):
         generator = ParameterGenerator(config)
         model = GrowingBart(bart, generator, config)
         
-        model.load_state_dict(convert_to_single_gpu(torch.load(checkpoint)))
+        model.load_state_dict(convert_to_single_gpu(torch.load(checkpoint)), strict=False)
 
         logger.info("Loading checkpoint from {}".format(checkpoint))
         if torch.cuda.is_available():
             model.to(torch.device("cuda"))
 
         model.eval()
-        f1s = inference(model, dev_data, save_predictions=True, verbose=True)
-        logger.info("%s on %s data: %.2f" % (dev_data.metric, dev_data.data_type, np.mean(f1s)*100))
+        score = inference(model, dev_data, save_predictions=True, verbose=True)
+        logger.info("%s on %s data: %s" % (dev_data.metric, dev_data.data_type, score))
 
 def train(args, logger, model, train_data, dev_data, optimizer, scheduler):
 
     model.train()
     global_step = 0
     train_losses = []
-    best_accuracy = -1
+    best_accuracy = (-1.0, -1.0, -1.0) if args.dataset == "zest_grouped" else -1.0
     stop_training = False
 
 
     # curr_em = inference(model if args.n_gpu==1 else model.module, dev_data)
-    # logger.info("[Before Training] %s %.2f%%" % (
+    # logger.info("[Before Training] %s %s" % (
     #         dev_data.metric,
-    #         curr_em*100))
+    #         curr_em))
 
     logger.info("Starting training!")
 
@@ -173,18 +184,18 @@ def train(args, logger, model, train_data, dev_data, optimizer, scheduler):
                 model.eval()
                 # curr_em = 0.0
                 curr_em = inference(model if args.n_gpu==1 else model.module, dev_data, save_predictions=True)
-                logger.info("Step %d Train loss %.2f %s %.2f%% on epoch=%d" % (
+                logger.info("Step %d Train loss %.2f %s %s on epoch=%d" % (
                         global_step,
                         np.mean(train_losses),
                         dev_data.metric,
-                        curr_em*100,
+                        curr_em,
                         epoch))
                 train_losses = []
                 if best_accuracy < curr_em:
                     model_state_dict = {k:v.cpu() for (k, v) in model.state_dict().items()}
                     torch.save(model_state_dict, os.path.join(args.output_dir, "best-model.pt"))
-                    logger.info("Saving model with best %s: %.2f%% -> %.2f%% on epoch=%d, global_step=%d" % \
-                            (dev_data.metric, best_accuracy*100.0, curr_em*100.0, epoch, global_step))
+                    logger.info("Saving model with best %s: %s -> %s on epoch=%d, global_step=%d" % \
+                            (dev_data.metric, best_accuracy, curr_em, epoch, global_step))
                     best_accuracy = curr_em
                     wait_step = 0
                     stop_training = False
@@ -222,8 +233,7 @@ def inference(model, dev_data, save_predictions=False, verbose=False):
                                     num_beams=dev_data.args.num_beams,
                                     max_length=dev_data.args.max_output_length,
                                     decoder_start_token_id=model.config.bos_token_id,
-                                    early_stopping=False,)
-
+                                    early_stopping=dev_data.gen_early_stop,)
         for input_, output in zip(batch[2], outputs):
             pred = dev_data.decode(output)
             predictions.append(pred)
@@ -231,4 +241,4 @@ def inference(model, dev_data, save_predictions=False, verbose=False):
     if save_predictions:
         dev_data.save_predictions(predictions)
 
-    return np.mean(dev_data.evaluate(predictions, verbose=verbose))
+    return dev_data.evaluate(predictions, verbose=verbose)

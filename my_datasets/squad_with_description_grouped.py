@@ -9,14 +9,13 @@ import torch
 from torch.utils.data import Dataset, TensorDataset, DataLoader, RandomSampler, SequentialSampler
 
 from .utils import MyGroupedQADataset, MyGroupedDataLoader
-from .zest import ZESTData, get_f1_over_list
-from .zest_evaluate import evaluate_predictions
+from .squad_grouped import SQuADGroupedData
+from .squad_descriptions import SQUAD_DESCRIPTIONS
 
-class ZESTGroupedData(ZESTData):
-
+class SQuADWithDescriptionGroupedData(SQuADGroupedData):
     def load_dataset(self, tokenizer, do_return=False):
         self.tokenizer = tokenizer
-        postfix = 'Grouped-' + tokenizer.__class__.__name__.replace("zer", "zed")
+        postfix = 'GroupedWithDescription-' + tokenizer.__class__.__name__.replace("zer", "zed")
 
         preprocessed_path = os.path.join(
             "/".join(self.data_path.split("/")[:-1]),
@@ -29,7 +28,6 @@ class ZESTGroupedData(ZESTData):
                 relation_ids, relation_mask, input_ids, attention_mask, \
                     decoder_input_ids, decoder_attention_mask, \
                     metadata_rel, metadata_questions, self.raw_questions, self.raw_answers = json.load(f)
-
         else:
             print("Start tokenizing ... {} instances".format(len(self.data)))
             
@@ -37,44 +35,44 @@ class ZESTGroupedData(ZESTData):
             # keep the original order so that the evaluation don't get messed up.
             relations = []
             for d in self.data:
-                if d['question'] not in relations:
-                    relations.append(d['question'])
-
-            # relations = sorted(list(set([d['question'] for d in self.data])))
+                if d['head'] not in relations:
+                    relations.append(d['head'])
 
             raw_data = [[] for _ in range(len(relations))]
             id2relation = {k: v for k,v in enumerate(relations)}
             relation2id = {v: k for k,v in enumerate(relations)}
 
-            # print("relation2id: {}".format(relation2id))
+            relations = [add_description(item) for item in relations]
+
+            print("relation2id: {}".format(relation2id))
 
             self.raw_questions = []
             self.raw_answers = []
 
             for d in self.data:
-                rel = d['question']
+                rel = d['head']
                 rel_id = relation2id[rel]
-                raw_data[rel_id].append((rel, d["context"], d["answer"]))
+                raw_data[rel_id].append((rel, d["question"], d["context"], d["answer"]))
 
             # qas are sorted according to relations
             metadata_rel, metadata_questions = [], []
             st, ed = 0, 0
             for one_rel_data in raw_data:
-                self.raw_questions += [" zest question: {} zest context: {}".format(item[0], item[1]) for item in one_rel_data]
-                self.raw_answers += [item[2] for item in one_rel_data]
+                self.raw_questions += [" squad question: {} squad context: {}".format(item[1], item[2]) for item in one_rel_data]
+                self.raw_answers += [item[3] for item in one_rel_data]
                 st = ed
                 ed = ed + len(one_rel_data)
                 metadata_questions += [(i, i+1) for i in range(st, ed)]
                 metadata_rel.append((st, ed))
 
-            print(relations[:20])
-            # print(self.raw_questions[:20])
-            # print(self.raw_answers[:20])
-            print(metadata_rel[-5:])
-            print(len(self.raw_questions))
-            print(len(self.raw_answers))
-            print(len(metadata_questions))
-            print(metadata_questions[-5:])
+            print(relations[:10])
+            print(self.raw_questions[:10])
+            print(self.raw_answers[:10])
+            # print(metadata_rel[-5:])
+            # print(len(self.raw_questions))
+            # print(len(self.raw_answers))
+            # print(len(metadata_questions))
+            # print(metadata_questions[-5:])
 
             # questions, answers, metadata_rel, metadata_questions = self.flatten(raw_data)
 
@@ -110,63 +108,6 @@ class ZESTGroupedData(ZESTData):
         if do_return:
             return self.dataset
 
-    def flatten(self, raw_data):
-        questions, answers, metadata_rel, metadata_questions = [], [], [], []
-        new_questions = []
-        new_answers = []
-        for relation in raw_data:
-            metadata_rel.append((len(new_questions), len(new_questions)+len(relation)))
-            new_questions += [qa[0] for qa in relation]
-            for qa in relation:
-                metadata_questions.append((len(new_answers), len(new_answers)+len(qa[1])))
-
-        return metadata_rel, metadata_questions
-
-    def load_dataloader(self, do_return=False):
-        self.dataloader = MyGroupedDataLoader(self.args, self.dataset, self.is_training)
-        if do_return:
-            return self.dataloader
-
-    def evaluate(self, predictions, verbose=False):
-        if self.data_type == 'test':
-            return (-1.0, -1.0, -1.0)
-        dev = []
-        with open(self.data_path, "r") as fin:
-            for line in fin:
-                dev.append(json.loads(line))
-
-        processed_predictions = []
-        for pred in predictions:
-            pred = pred.strip()
-
-            # if an empty string is predicted, set it to "n/a"
-            if len(pred) == 0:
-                pred = "n/a"
-
-            if pred[0] == '"' and pred[-1] == '"':
-                pred = json.loads(pred)
-            processed_predictions.append(pred)
-
-        score = evaluate_predictions(dev, processed_predictions, os.path.join(self.args.output_dir, "results.json"), verbose)
-        # f1s = []
-
-        # for i in range(5):
-        #     print(predictions[i])
-        #     print(self.raw_questions[i])
-        #     print(self.raw_answers[i])
-
-        # for (prediction, dp) in zip(predictions, self.raw_answers):
-        #     f1s.append(get_f1_over_list(prediction.strip(), dp))
-        return score
-
-    def save_predictions(self, predictions):
-        assert len(predictions)==len(self), (len(predictions), len(self))
-                
-        predictions = ['n/a' if len(prediction.strip())==0 else prediction for prediction in predictions]
-        prediction_text = [prediction.strip()+'\n' for prediction in predictions]
-        save_path = os.path.join(self.args.output_dir, "{}_predictions.txt".format(self.args.prefix))
-        
-        with open(save_path, "w") as f:
-            f.writelines(prediction_text)
-        
-        self.logger.info("Saved prediction in {}".format(save_path))
+def add_description(input_str, raw=False):
+    description = SQUAD_DESCRIPTIONS[input_str]
+    return "{} [SEP] description: {}".format(input_str, description)

@@ -78,7 +78,7 @@ def train(args, logger, model, train_data, dev_data, optimizer, scheduler):
     model.train()
     global_step = 0
     train_losses = []
-    best_accuracy = -1
+    best_accuracy = (-1.0, -1.0, -1.0) if args.dataset == "zest" else -1.0
     stop_training=False
 
     logger.info("Starting training!")
@@ -114,18 +114,18 @@ def train(args, logger, model, train_data, dev_data, optimizer, scheduler):
             if global_step % args.eval_period == 0:
                 model.eval()
                 curr_em = inference(model if args.n_gpu==1 else model.module, dev_data)
-                logger.info("Step %d Train loss %.2f %s %.2f%% on epoch=%d" % (
+                logger.info("Step %d Train loss %.2f %s %s on epoch=%d" % (
                         global_step,
                         np.mean(train_losses),
                         dev_data.metric,
-                        curr_em*100,
+                        curr_em,
                         epoch))
                 train_losses = []
                 if best_accuracy < curr_em:
                     model_state_dict = {k:v.cpu() for (k, v) in model.state_dict().items()}
                     torch.save(model_state_dict, os.path.join(args.output_dir, "best-model.pt"))
-                    logger.info("Saving model with best %s: %.2f%% -> %.2f%% on epoch=%d, global_step=%d" % \
-                            (dev_data.metric, best_accuracy*100.0, curr_em*100.0, epoch, global_step))
+                    logger.info("Saving model with best %s: %s -> %s on epoch=%d, global_step=%d" % \
+                            (dev_data.metric, best_accuracy, curr_em, epoch, global_step))
                     best_accuracy = curr_em
                     wait_step = 0
                     stop_training = False
@@ -147,15 +147,17 @@ def inference(model, dev_data, save_predictions=False, verbose=False):
     for i, batch in enumerate(dev_data.dataloader):
         if torch.cuda.is_available():
             batch = [b.to(torch.device("cuda")) for b in batch]
+        pad_token_id = dev_data.tokenizer.pad_token_id
+        batch[0], batch[1] = trim_batch(batch[0], pad_token_id, batch[1])
         outputs = model.generate(input_ids=batch[0],
                                  attention_mask=batch[1],
                                  num_beams=dev_data.args.num_beams,
                                  max_length=dev_data.args.max_output_length,
                                  decoder_start_token_id=model.config.bos_token_id,
-                                 early_stopping=False,)
+                                 early_stopping=dev_data.gen_early_stop,)
         for input_, output in zip(batch[0], outputs):
             pred = dev_data.decode(output)
             predictions.append(pred)
     if save_predictions:
         dev_data.save_predictions(predictions)
-    return np.mean(dev_data.evaluate(predictions, verbose=verbose))
+    return dev_data.evaluate(predictions, verbose=verbose)

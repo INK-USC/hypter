@@ -21,6 +21,7 @@ def main2():
     bart.model.load_state_dict(bart_old.state_dict(), strict=False)
 
     config = BartWithAdapterConfig.from_pretrained('facebook/bart-base')
+    # config.adapt_layer_norm = True
     generator = ParameterGenerator(config)
 
     output = generator(torch.tensor([[1,2,3]]))
@@ -29,17 +30,20 @@ def main2():
 
     growingbart = GrowingBart(bart, generator, config)
 
-    output = growingbart(torch.tensor([[4,1,3,4,3,5,6,3,2]]), torch.tensor([[4,1,3,4,3,5,6,3,2]]))
+    output = growingbart(torch.tensor([[4,1,3,4,3,5,6,3,2]]), torch.tensor([[1,1,1,1,1,1,1,1,1]]),
+        torch.tensor([[4,1,3,4,3,5,6,3,2]]), torch.tensor([[1,1,1,1,1,1,1,1,1]]),
+        torch.tensor([[4,1,3,4,3,5,6,3,2]]), torch.tensor([[1,1,1,1,1,1,1,1,1]]))
 
     print(output)
     
     loss = output[0].sum(-1).sum(-1).sum(-1)
+    print(loss)
     loss.backward()
 
-    for n, p in generator.named_parameters():
-        if p.requires_grad:
-            print(n)
-            print(p.grad)
+    # for n, p in generator.decoders.named_parameters():
+    #     if p.requires_grad:
+    #         print(n)
+    #         print(p.grad)
 
 
 if __name__ == "__main__":

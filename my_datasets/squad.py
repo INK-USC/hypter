@@ -15,14 +15,14 @@ from torch.utils.data import Dataset, TensorDataset, DataLoader, RandomSampler, 
 from .utils import MyQADataset, MyDataLoader
 from .zest_evaluate import evaluate_predictions
 
-class ZESTData(object):
+class SQuADData(object):
 
     def __init__(self, logger, args, data_path, is_training):
         self.data_path = data_path
         if args.debug:
             self.data_path = data_path.replace("train", "dev")
         with open(self.data_path, "r", encoding="utf-8") as f:
-            json_list = list(f)
+            raw_data = json.load(f)
 
         if "test" in self.data_path:
             self.data_type = "test"
@@ -33,46 +33,19 @@ class ZESTData(object):
         else:
             raise NotImplementedError()
 
-        self.old_data = [json.loads(json_str) for json_str in json_list]
         self.data = []
 
         # following zest original code
         random.seed(5)
+        count = 0
 
-        for dp in self.old_data:
-            for idx, example in enumerate(dp["examples"]):
-                if self.data_type != "test":
-                    answer = example["answer"]
-
-                    # following zest original code
-                    try:
-                        # Special processing of multiple correct answers in structure formatted output.
-                        # Chose one at random. Note the official eval script will
-                        # consider all possible answers.
-                        json_answer = json.loads(answer)
-                        if isinstance(json_answer, list):
-                            for row in json_answer:
-                                for key in row.keys():
-                                    value = row[key]
-                                    if isinstance(value, list):
-                                        value_choice = random.choice(value)
-                                        row[key] = value_choice
-                            answer = json.dumps(json_answer)
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-
-                    if isinstance(answer, list):
-                        # Chose one at random.
-                        answer_choice = random.choice(answer)
-                        answer = answer_choice
-                else:
-                    answer = "TEST_NO_ANSWER"
-
-                self.data.append({  "id": dp["id"],
-                                    "in_task_id": idx,
+        for head, dps in raw_data.items():
+            for dp in dps:
+                self.data.append({  "id": count,
+                                    "head": head,
                                     "question": dp["question"].replace("\n", " "),
-                                    "context": example["context"].replace("\n", " "),
-                                    "answer": answer
+                                    "context": dp["context"].replace("\n", " "),
+                                    "answer": dp["answer"][0]["text"] # only one answer
                                 })
 
         if args.debug:
@@ -141,7 +114,7 @@ class ZESTData(object):
             answers = []
 
             for dp in self.data:
-                questions.append(" zest question: {} zest context: {}".format(dp["question"], dp["context"]))
+                questions.append(" squad question: {} sqaud context: {}".format(dp["question"], dp["context"]))
                 answers.append([dp["answer"]])
 
             print("Printing Examples ...")
@@ -194,36 +167,11 @@ class ZESTData(object):
             return self.dataloader
 
     def evaluate(self, predictions, verbose=False):
-        if self.data_type == 'test':
-            return (-1.0, -1.0, -1.0)
-        dev = []
-        with open(self.data_path, "r") as fin:
-            for line in fin:
-                dev.append(json.loads(line))
-
-        processed_predictions = []
-        for pred in predictions:
-            pred = pred.strip()
-
-            # if an empty string is predicted, set it to "n/a"
-            if len(pred) == 0:
-                pred = "n/a"
-
-            if pred[0] == '"' and pred[-1] == '"':
-                pred = json.loads(pred)
-            processed_predictions.append(pred)
-
-        score = evaluate_predictions(dev, processed_predictions, os.path.join(self.args.output_dir, "results.json"), verbose)
-        # f1s = []
-
-        # for i in range(5):
-        #     print(predictions[i])
-        #     print(self.raw_questions[i])
-        #     print(self.raw_answers[i])
-
-        # for (prediction, dp) in zip(predictions, self.raw_answers):
-        #     f1s.append(get_f1_over_list(prediction.strip(), dp))
-        return score
+        assert len(predictions)==len(self), (len(predictions), len(self))
+        f1s = []
+        for (prediction, dp) in zip(predictions, self.data):
+            f1s.append(get_f1_over_list(prediction.strip(), [dp["answer"]]))
+        return np.mean(f1s)
 
     def save_predictions(self, predictions):
         assert len(predictions)==len(self), (len(predictions), len(self))

@@ -1,6 +1,5 @@
 import os
 import json
-import copy
 import re
 import string
 import numpy as np
@@ -10,73 +9,14 @@ import torch
 from torch.utils.data import Dataset, TensorDataset, DataLoader, RandomSampler, SequentialSampler
 
 from .utils import MyQADataset, MyDataLoader
+from .zsre import ZSREData
+from .zsre_relations import ZSRE_RELATIONS
 
-class ZSREData(object):
-
-    def __init__(self, logger, args, data_path, is_training):
-        self.data_path = data_path
-        if args.debug:
-            self.data_path = data_path.replace("train", "dev")
-        with open(self.data_path, "r") as f:
-            json_list = list(f)
-        self.data = [json.loads(json_str) for json_str in json_list]
-
-        if args.debug:
-            self.data = self.data[:40]
-
-        assert type(self.data)==list
-        assert all(["id" in d for d in self.data]), self.data[0].keys()
-
-        if type(self.data[0]["id"])==int:
-            for i in range(len(self.data)):
-                self.data[i]["id"] = str(self.data[i]["id"])
-
-        self.index2id = {i:d["id"] for i, d in enumerate(self.data)}
-        self.id2index = {d["id"]:i for i, d in enumerate(self.data)}
-
-        self.is_training = is_training
-        self.load = not args.debug
-        self.logger = logger
-        self.args = args
-
-        if "test" in self.data_path:
-            self.data_type = "test"
-        elif "dev" in self.data_path:
-            self.data_type = "dev"
-        elif "train" in self.data_path:
-            self.data_type = "train"
-        else:
-            raise NotImplementedError()
-
-        self.metric = "Acc"
-        self.max_input_length = self.args.max_input_length
-        self.tokenizer = None
-        self.dataset = None
-        self.dataloader = None
-        self.cache = None
-
-        self.gen_early_stop = True
-
-    def __len__(self):
-        return len(self.data)
-
-    def decode(self, tokens):
-        return self.tokenizer.decode(tokens, skip_special_tokens=True, clean_up_tokenization_spaces=True)
-
-    def decode_batch(self, tokens):
-        return [self.decode(_tokens) for _tokens in tokens]
-
-    def flatten(self, answers):
-        # not sure what this means
-        new_answers, metadata = [], []
-        for answer in answers:
-            metadata.append((len(new_answers), len(new_answers)+len(answer)))
-            new_answers += answer
-        return new_answers, metadata
+class ZSREWithDescriptionData(ZSREData):
 
     def load_dataset(self, tokenizer, do_return=False):
         self.tokenizer = tokenizer
-        postfix = tokenizer.__class__.__name__.replace("zer", "zed")
+        postfix = 'Withdescription-' + tokenizer.__class__.__name__.replace("zer", "zed")
         
         preprocessed_path = os.path.join(
             "/".join(self.data_path.split("/")[:-1]),
@@ -91,13 +31,14 @@ class ZSREData(object):
 
         else:
             print("Start tokenizing ... {} instances".format(len(self.data)))
-            questions = [d["input"] for d in self.data]
+
+            questions = [add_description(d["input"]) for d in self.data]
             if self.data_type != "test":
                 answers = [[item["answer"] for item in d["output"]] for d in self.data]
             else:
                 answers = [['TEST_NO_ANSWER'] for d in self.data]
-
-            answers, metadata = self.flatten(answers) # what is metadata?
+                
+            answers, metadata = self.flatten(answers)
 
             if self.args.do_lowercase:
                 questions = [question.lower() for question in questions]
@@ -105,6 +46,9 @@ class ZSREData(object):
             if self.args.append_another_bos:
                 questions = ["<s> "+question for question in questions]
                 answers = ["<s> " +answer for answer in answers]
+
+            print(questions[:10])
+            print(answers[:10])
             
             print("Tokenizing Input ...")
             question_input = tokenizer.batch_encode_plus(questions,
@@ -134,30 +78,11 @@ class ZSREData(object):
         if do_return:
             return self.dataset
 
-    def load_dataloader(self, do_return=False):
-        self.dataloader = MyDataLoader(self.args, self.dataset, self.is_training)
-        if do_return:
-            return self.dataloader
-
-    def evaluate(self, predictions, verbose=False):
-        assert len(predictions)==len(self), (len(predictions), len(self))
-        # print(predictions[:5])
-        ems = []
-        for (prediction, dp) in zip(predictions, self.data):
-            ems.append(get_accuracy(prediction.strip(), [item["answer"] for item in dp["output"]]))
-        return np.mean(ems)
-
-    def save_predictions(self, predictions):
-        assert len(predictions)==len(self), (len(predictions), len(self))
-        output_data = copy.deepcopy(self.data)
-        # prediction_dict = {dp["id"]:prediction for dp, prediction in zip(self.data, predictions)}
-        for dp, prediction in zip(output_data, predictions):
-            dp["output"] = [{"answer": prediction.strip()}]
-        save_path = os.path.join(self.args.output_dir, "{}_predictions.jsonl".format(self.args.prefix))
-        with open(save_path, "w") as f:
-            f.writelines([json.dumps(dp)+'\n' for dp in output_data])
-            # json.dump(prediction_dict, f)
-        self.logger.info("Saved prediction in {}".format(save_path))
+def add_description(input_str):
+    split_idx = input_str.index('[SEP]')
+    rel_name = input_str[split_idx+6:]
+    description = ZSRE_RELATIONS[rel_name]["description"]
+    return "{} [SEP] description: {}".format(input_str, description)
 
 def get_accuracy(prediction, groundtruth):
     if type(groundtruth)==list:

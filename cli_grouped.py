@@ -42,8 +42,10 @@ def main():
     parser.add_argument("--do_predict", action='store_true')
     parser.add_argument("--predict_checkpoint", type=str, default="best-model.pt")
     parser.add_argument('--inner_bsz', type=int, default=64)
+    parser.add_argument('--inner_accum', type=int, default=1)
     parser.add_argument('--adapter_dim', type=int, default=64)
     parser.add_argument("--adapt_layer_norm", action='store_true', default=False)
+    parser.add_argument("--unfreeze_hyper_encoder", action='store_true', default=False)
 
     ## Model parameters
     parser.add_argument("--checkpoint", type=str)

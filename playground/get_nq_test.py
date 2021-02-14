@@ -9,7 +9,7 @@ import random
 import numpy as np
 from tqdm import tqdm
 
-
+SQUAD_TEST_HEADS = ['where were', 'what political', 'what religion', 'why did', 'what type', 'what language', 'who had', 'what percentage', 'what can', 'how much']
 
 def strip(sent):
     return sent.strip(" ").rstrip('.').rstrip('?').rstrip('!').rstrip('"')
@@ -116,8 +116,8 @@ def find_top_q_head(examples, topn):
 
     sorted_x = sorted(wh2.items(), key=lambda kv: len(kv[1]), reverse=True)
     print('#Question Head:', len(sorted_x))
-    for i in range(topn):
-        print(sorted_x[i][0], len(sorted_x[i][1]))
+    # for i in range(topn):
+    #     print(sorted_x[i][0], len(sorted_x[i][1]))
     # pp = pprint.PrettyPrinter(indent=4)
     # print(sorted_x[:topn])
     # print('#Hits in Top {}:'.format(topn), sum(item[1] for item in sorted_x[:40]))
@@ -142,39 +142,44 @@ def get_questions(examples, head, num):
         print(ret)
     return ret
 
-def read_squad_examples(input_file):
+def read_nq_examples(input_file):
     with open(input_file, 'r') as fin:
-        source = json.load(fin)
+        lines = fin.readlines()
+        lines = lines[1:] # exclude the header
+        source = [json.loads(line.strip()) for line in lines]
 
     total = 0
     examples = []
-    for article in tqdm(source["data"]):
-        for para in article["paragraphs"]:
-            context = para["context"]
-            for qa in para["qas"]:
-                total += 1
-                ques = qa["question"]
-                ans = qa["answers"]
-                examples.append({'context': context, 'question': ques, 'answer': ans})
+    for para in tqdm(source):
+        context = para["context"]
+        for qa in para["qas"]:
+            total += 1
+            ques = qa["question"]
+            ans = qa["answers"]
+            examples.append({'context': context, 'question': ques, 'answer': [{'text': ans[0]}]})
+
+    print(examples[:5])
     return examples
 
 def down_sample_and_split(heads, n_per_head):
     random.shuffle(heads)
-    new_heads = []
+    new_heads = {}
 
     for head in heads:
-        new_heads.append((head[0], random.sample(head[1], n_per_head)))
+        if len(head[1]) < n_per_head:
+            continue
+        new_heads[head[0]] = random.sample(head[1], n_per_head)
+    
+    print(new_heads.keys())
 
-    train = {d1: d2 for (d1, d2) in new_heads[:80]}
-    dev = {d1: d2 for (d1, d2) in new_heads[80:90]}
-    test = {d1: d2 for (d1, d2) in new_heads[90:]}
+    test = {head: new_heads[head] for head in SQUAD_TEST_HEADS if head in new_heads}
 
-    return train, dev, test
+    return test
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--in_file", default='../data/squad/train.json', type=str, required=False)
-    parser.add_argument("--out_dir", default='../data/squad/80tasks-64pertask-jan20', type=str, required=False,
+    parser.add_argument("--in_file", default='../data/newsqa/NewsQA.jsonl', type=str, required=False)
+    parser.add_argument("--out_dir", default='../data/newsqa/', type=str, required=False,
                         help="Output directory")
     parser.add_argument("--out_train", default='zs_train.json', type=str, required=False)
     parser.add_argument("--out_dev", default='zs_dev.json', type=str, required=False)
@@ -186,13 +191,10 @@ def main():
 
     random.seed(opt['seed'])
 
-    examples = read_squad_examples(opt['in_file'])
-    top_heads = find_top_q_head(examples, topn=100)
-    train, dev, test = down_sample_and_split(top_heads, n_per_head=64)
-    # print(list(dev.values())[0])
+    examples = read_nq_examples(opt['in_file'])
+    top_heads = find_top_q_head(examples, topn=300)
+    test = down_sample_and_split(top_heads, n_per_head=64)
 
-    print('Train heads: {}'.format(train.keys()))
-    print('Dev heads: {}'.format(dev.keys()))
     print('Test heads: {}'.format(test.keys()))
 
     # if not os.path.exists(opt['out_dir']):
@@ -201,8 +203,8 @@ def main():
     #     json.dump(train, fout)
     # with open(os.path.join(opt['out_dir'], opt['out_dev']), 'w') as fout:
     #     json.dump(dev, fout)
-    # with open(os.path.join(opt['out_dir'], opt['out_test']), 'w') as fout:
-    #     json.dump(test, fout)
+    with open(os.path.join(opt['out_dir'], opt['out_test']), 'w') as fout:
+        json.dump(test, fout)
 
 
 if __name__ == "__main__":

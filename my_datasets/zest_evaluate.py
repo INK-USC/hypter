@@ -1218,7 +1218,7 @@ def evaluate_predictions(dev: List[Dict], predictions: List, output_path: str, v
     with open(output_path, "w") as fout:
         json.dump(final_results_gen, fout, default=convert)
 
-    return final_results_gen["overall"]
+    return (df.loc["average"]["90"], df.loc["average"]["75"], df.loc["average"]["mean"])
 
 
 @click.command()

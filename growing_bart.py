@@ -39,7 +39,10 @@ class ParameterGenerator(nn.Module):
         self.config = config
 
         self.encoder = RobertaModel.from_pretrained('roberta-base')
-        self.encoder.eval()
+        if self.config.unfreeze_hyper_encoder:
+            self.encoder.train()
+        else:
+            self.encoder.eval()
 
         self.decoders = nn.ModuleList([
             SimpleGenerator(config) for _ in range(config.encoder_layers + config.decoder_layers)
@@ -50,11 +53,17 @@ class ParameterGenerator(nn.Module):
             use_cache=False, is_training=False):
 
         # to save memory, the encoder (bart) here is frozen
-        with torch.no_grad():
+        if self.config.unfreeze_hyper_encoder:
             outputs = self.encoder(
                 input_ids,
                 attention_mask=attention_mask,
             )
+        else:
+            with torch.no_grad():
+                outputs = self.encoder(
+                    input_ids,
+                    attention_mask=attention_mask,
+                )
 
         x = outputs[0] # last hidden state
         x = x[:, 0, :] # take <s> token (equiv. to [CLS])
