@@ -7,6 +7,7 @@ from transformers import AdamW, get_linear_schedule_with_warmup
 
 from dataset import MyDatasetCollection
 from bart import MyBart
+from bart_with_adapter2 import BartWithAdapterConfig, MyBartWithAdapter
 from utils import freeze_embeds, trim_batch
 
 from tqdm import tqdm
@@ -24,6 +25,12 @@ def run(args, logger):
     dev_data.load_dataloader()
 
     if args.do_train:
+        config = BartWithAdapterConfig.from_pretrained(args.model)
+        config.adapter_dim = args.adapter_dim
+        config.adapt_layer_norm = args.adapt_layer_norm
+        config.unfreeze_hyper_encoder = args.unfreeze_hyper_encoder
+        bart = MyBartWithAdapter(config)
+
         if args.checkpoint is not None:
             def convert_to_single_gpu(state_dict):
                 def _convert(key):
@@ -31,11 +38,16 @@ def run(args, logger):
                         return key[7:]
                     return key
                 return {_convert(key):value for key, value in state_dict.items()}
-            model = MyBart.from_pretrained(args.model,
+            bart_old = MyBart.from_pretrained(args.model,
                                            state_dict=convert_to_single_gpu(torch.load(args.checkpoint)))
-        else:
-            model = MyBart.from_pretrained(args.model)
+            bart.model.load_state_dict(bart_old.model.state_dict(), strict=False)
+            logger.info("Loading checkpoint from {}".format(args.checkpoint))
 
+        else:
+            bart_old = MyBart.from_pretrained(args.model)
+            bart.model.load_state_dict(bart_old.model.state_dict(), strict=False)
+
+        model = bart
         if args.freeze_embeds:
             logger.info("Freezing embeddings")
             freeze_embeds(model)
@@ -54,7 +66,7 @@ def run(args, logger):
 
         num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
         logger.info("#Params: {}".format(num_parameters))
-        
+
         optimizer = AdamW(optimizer_grouped_parameters, lr=args.learning_rate, eps=args.adam_epsilon)
         scheduler =  get_linear_schedule_with_warmup(optimizer,
                                         num_warmup_steps=args.warmup_steps,
@@ -69,8 +81,22 @@ def run(args, logger):
                     return key[7:]
                 return key
             return {_convert(key):value for key, value in state_dict.items()}
-        model = MyBart.from_pretrained(args.model,
-                                       state_dict=convert_to_single_gpu(torch.load(checkpoint)))
+
+        config = BartWithAdapterConfig.from_pretrained(args.model)
+        config.adapter_dim = args.adapter_dim
+        # model = MyBartWithAdapter.from_pretrained(args.model,
+        #                                state_dict=convert_to_single_gpu(torch.load(checkpoint)))
+
+
+        model = MyBartWithAdapter(config)
+        model.load_state_dict(convert_to_single_gpu(torch.load(checkpoint)), strict=True)
+
+        # generator = ParameterGenerator(config)
+        # model = GrowingBart(bart, generator, config)
+        
+        # model.load_state_dict(convert_to_single_gpu(torch.load(checkpoint)), strict=False)
+
+
         logger.info("Loading checkpoint from {}".format(checkpoint))
         if torch.cuda.is_available():
             model.to(torch.device("cuda"))

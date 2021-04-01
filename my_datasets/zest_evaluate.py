@@ -1192,7 +1192,7 @@ def evaluate_predictions(dev: List[Dict], predictions: List, output_path: str, v
     # df = (df.round(2) * 100).astype(int)  # make numbers pretty
     df.to_csv(output_path + ".csv")
     if verbose:
-        print(df)
+        print(df.to_string())
     else:
         print(df.loc["average"])
 
