@@ -1,10 +1,10 @@
 ## Code for "Zero-shot Learning by Generating Task-specific Adapters"
 
-This is the repository containing code for "Zero-shot Learning by Generating Task-specific Adapters" ([arXiv](https://arxiv.org/abs/2101.00420))
+This is the repository containing code for "Zero-shot Learning by Generating Task-specific Adapters" ([arXiv](https://arxiv.org/abs/2101.00420)). This is a beta version and we will add more details in the future.
 
 
 ### Environment
-We modified the code in [shmsw25/bart-closed-book-qa](https://github.com/shmsw25/bart-closed-book-qa) (Thanks!). 
+We modified the code in [shmsw25/bart-closed-book-qa](https://github.com/shmsw25/bart-closed-book-qa) (Thanks to the authors!). 
 
 Following their instructions, please install the environment with these commands:
 
